@@ -114,11 +114,27 @@ if __name__ == "__main__":
         # Añadir el manejador de mensajes de texto
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
-        # Iniciar telegram (esto maneja su propio event loop de fondo internamente al arrancar)
-        # Vamos a añadir nuestra tarea proactiva justo cuando el bot empieza usando "post_init"
+        # IMPORTANTE: Render Web Services exige que abramos un puerto HTTP o matará la app por timeout
+        # Creamos un mini-servidor web falso que responda 200 OK para engañar a Render
+        port = int(os.environ.get("PORT", "8080"))
+
+        async def dummy_web_server():
+            from aiohttp import web
+            async def health_check(request):
+                return web.Response(text="Bot of Dr. Aris Thorne is ALIVE!")
+            
+            app_web = web.Application()
+            app_web.router.add_get('/', health_check)
+            runner = web.AppRunner(app_web)
+            await runner.setup()
+            site = web.TCPSite(runner, '0.0.0.0', port)
+            await site.start()
+            print(f"🌍 Falso servidor web escuchando señales de vida de Render en el puerto {port}")
+
         async def on_startup(app: Application):
+            asyncio.create_task(dummy_web_server())
             asyncio.create_task(proactivity_loop(app))
-            print("🚀 Tarea de proactividad iniciada en el fondo...")
+            print("🚀 Tarea de proactividad y servidor Web iniciados en el fondo...")
             
         app.post_init = on_startup
 
