@@ -114,29 +114,32 @@ if __name__ == "__main__":
         # Añadir el manejador de mensajes de texto
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
-        # IMPORTANTE: Render Web Services exige que abramos un puerto HTTP o matará la app por timeout
-        # Creamos un mini-servidor web falso que responda 200 OK para engañar a Render
+        # IMPORTANTE: Render exige que abramos el puerto para Web Services antes de que empiece el Bot (porque run_polling es bloqueante)
         port = int(os.environ.get("PORT", "8080"))
 
-        async def dummy_web_server():
-            from aiohttp import web
-            async def health_check(request):
-                return web.Response(text="Bot of Dr. Aris Thorne is ALIVE!")
-            
-            app_web = web.Application()
-            app_web.router.add_get('/', health_check)
-            runner = web.AppRunner(app_web)
-            await runner.setup()
-            site = web.TCPSite(runner, '0.0.0.0', port)
-            await site.start()
-            print(f"🌍 Falso servidor web escuchando señales de vida de Render en el puerto {port}")
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"Bot is alive!")
+
+        def run_dummy_server():
+            httpd = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
+            print(f"🌍 Falso servidor web escuchando en el puerto {port}")
+            httpd.serve_forever()
+
+        # Arrancamos el falso servidor en un hilo (thread) separado, así no bloquea a Telegram
+        server_thread = threading.Thread(target=run_dummy_server, daemon=True)
+        server_thread.start()
 
         async def on_startup(app: Application):
-            asyncio.create_task(dummy_web_server())
             asyncio.create_task(proactivity_loop(app))
-            print("🚀 Tarea de proactividad y servidor Web iniciados en el fondo...")
+            print("🚀 Tarea de proactividad iniciada en el fondo...")
             
         app.post_init = on_startup
 
-        print("🚀 Bot encendido y escuchando...")
+        print("🚀 Bot encendido y escuchando a Telegram...")
         app.run_polling()
