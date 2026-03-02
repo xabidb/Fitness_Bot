@@ -2,7 +2,7 @@ import os
 import fitz
 import asyncio
 import logging
-import google.generativeai as genai
+import google.genai as genai
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
@@ -17,7 +17,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MY_CHAT_ID = os.getenv("MY_CHAT_ID")
 
 # 3. CONFIGURAR GEMINI
-genai.configure(api_key=GEMINI_API_KEY)
 
 def leer_pdf(ruta_pdf):
     try:
@@ -55,10 +54,7 @@ Data-driven approach: Utilizing metrics (when available) to inform training adju
 Your ultimate goal is to create "Peak Performance Hybrids" – athletes who are robust, adaptable, and excel in the unique demands of combined running and climbing pursuits, all while maintaining optimal physical health and longevity.
 """
 
-model = genai.GenerativeModel(
-    model_name='gemini-1.5-flash',
-    system_instruction=SYSTEM_INSTRUCTION
-)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # 4. FUNCIÓN: RESPONDER A TUS MENSAJES
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -70,8 +66,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"⚠️ ATENCIÓN: Tu Chat ID es {chat_id}. Cópialo y ponlo en tus variables de entorno.")
 
     try:
-        # Generar respuesta con Gemini
-        response = model.generate_content(user_text)
+        # Generar respuesta con Gemini usando la nueva librería genai
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=user_text,
+            config={'system_instruction': SYSTEM_INSTRUCTION}
+        )
         await update.message.reply_text(response.text)
     except Exception as e:
         logging.error(f"Error en Gemini: {e}")
@@ -92,7 +92,11 @@ async def proactivity_loop(app: Application):
         )
         
         try:
-            check = model.generate_content(prompt_iniciativa)
+            check = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt_iniciativa,
+                config={'system_instruction': SYSTEM_INSTRUCTION}
+            )
             if MY_CHAT_ID:
                 await app.bot.send_message(chat_id=MY_CHAT_ID, text=check.text)
                 logging.info("Mensaje proactivo enviado con éxito.")
@@ -110,9 +114,13 @@ if __name__ == "__main__":
         # Añadir el manejador de mensajes de texto
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
-        # Crear la tarea de proactividad en el fondo
-        loop = asyncio.get_event_loop()
-        loop.create_task(proactivity_loop(app))
-        
+        # Iniciar telegram (esto maneja su propio event loop de fondo internamente al arrancar)
+        # Vamos a añadir nuestra tarea proactiva justo cuando el bot empieza usando "post_init"
+        async def on_startup(app: Application):
+            asyncio.create_task(proactivity_loop(app))
+            print("🚀 Tarea de proactividad iniciada en el fondo...")
+            
+        app.post_init = on_startup
+
         print("🚀 Bot encendido y escuchando...")
         app.run_polling()
