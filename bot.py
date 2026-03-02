@@ -2,7 +2,10 @@ import os
 import fitz
 import asyncio
 import logging
+import json
+from pymongo import MongoClient
 import google.genai as genai
+from google.genai import types
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
@@ -15,6 +18,7 @@ logging.basicConfig(
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MY_CHAT_ID = os.getenv("MY_CHAT_ID")
+MONGO_URI = os.getenv("MONGO_URI")
 
 # 3. CONFIGURAR GEMINI
 
@@ -56,6 +60,45 @@ Your ultimate goal is to create "Peak Performance Hybrids" – athletes who are 
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
+# --- SISTEMA DE MEMORIA LARGO PLAZO (MONGODB) ---
+# Conectar a MongoDB
+try:
+    if MONGO_URI:
+        mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        db = mongo_client["telegram_bot_db"]
+        coleccion_memoria = db["historial_chats"]
+        logging.info("Conectado a MongoDB excitósamente.")
+    else:
+        logging.warning("No se ha definido MONGO_URI. La memoria no se guardará.")
+        coleccion_memoria = None
+except Exception as e:
+    logging.error(f"Error al conectar con MongoDB: {e}")
+    coleccion_memoria = None
+
+def cargar_memoria(chat_id):
+    if coleccion_memoria is not None:
+        try:
+            documento = coleccion_memoria.find_one({"chat_id": str(chat_id)})
+            if documento:
+                return documento.get("historial", [])
+        except Exception as e:
+            logging.error(f"Error al cargar memoria de MongoDB: {e}")
+    return []
+
+def guardar_memoria(chat_id, historial):
+    if coleccion_memoria is not None:
+        try:
+            # Guardamos solo los últimos 40 mensajes para no saturar
+            historial_recortado = historial[-40:]
+            coleccion_memoria.update_one(
+                {"chat_id": str(chat_id)},
+                {"$set": {"historial": historial_recortado}},
+                upsert=True
+            )
+        except Exception as e:
+            logging.error(f"Error al guardar memoria en MongoDB: {e}")
+# --------------------------------------
+
 # 4. FUNCIÓN: RESPONDER A TUS MENSAJES
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -66,12 +109,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"⚠️ ATENCIÓN: Tu Chat ID es {chat_id}. Cópialo y ponlo en tus variables de entorno.")
 
     try:
-        # Generar respuesta con Gemini usando la nueva librería genai
+        # Cargar el historial previo
+        historial = cargar_memoria(chat_id)
+        
+        # Formatear el historial para Gemini
+        historial_gemini = []
+        for msg in historial:
+            historial_gemini.append(
+                types.Content(role=msg["role"], parts=[types.Part.from_text(text=msg["text"])])
+            )
+            
+        # Añadir el NUEVO mensaje del usuario a la lista que enviaremos
+        historial_gemini.append(
+            types.Content(role="user", parts=[types.Part.from_text(text=user_text)])
+        )
+
+        # Generar respuesta con Gemini mandando todo el contexto
         response = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=user_text,
+            contents=historial_gemini,
             config={'system_instruction': SYSTEM_INSTRUCTION}
         )
+        
+        # Guardar en nuestra base de datos el nuevo par de mensajes
+        historial.append({"role": "user", "text": user_text})
+        historial.append({"role": "model", "text": response.text})
+        guardar_memoria(chat_id, historial)
+
         await update.message.reply_text(response.text)
     except Exception as e:
         logging.error(f"Error en Gemini: {e}")
